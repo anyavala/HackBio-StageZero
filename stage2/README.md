@@ -25,11 +25,11 @@ All steps are implemented in **`bone_narrow.ipynb`** and **`bonemarrow_stage2.py
 
 ## 📂 Files Included
 
-| File                     | Description                                                |
-| ------------------------ | ---------------------------------------------------------- |
-| **bone_narrow.ipynb**    | Jupyter notebook containing the full exploratory analysis. |
-| **bonemarrow.md**        | Notes and documentation describing the analysis.           |
-| **bonemarrow_stage2.py** | Python script version of the full Scanpy workflow.         |
+| File                     | Description                                                                 |
+| ------------------------ | --------------------------------------------------------------------------- |
+| **bone_narrow.ipynb**    | Jupyter notebook containing the full exploratory analysis.                  |
+| **bonemarrow_stage2.py** | Modular Python script that runs the Scanpy workflow end-to-end (CLI-ready). |
+| **cell_type_interpretation.md** | Biological interpretation of the annotated clusters.                 |
 
 ---
 
@@ -157,15 +157,24 @@ jupyter notebook
 2. Open `bone_narrow.ipynb`.
 3. Run all cells in order to reproduce the full analysis.
 
-### Run the Python Script (`bonemarrow_stage2.py`)
-
-Execute:
+### Run the Modular Script (`bonemarrow_stage2.py`)
 
 ```bash
-python bonemarrow_stage2.py
+python bonemarrow_stage2.py \
+  --input-path bone_marrow.h5ad \
+  --output-h5ad processed.h5ad \
+  --plots-dir figures \
+  --show-plots
 ```
 
-Ensure that `bone_marrow.h5ad` is located in the same directory as the script unless you modify the path.
+**Inputs:** an `.h5ad` file with raw counts and metadata (`Cell.group` is used for annotation by default).
+
+**Outputs:**
+- process log + cell-type summary printed to stdout
+- optional processed AnnData file (`--output-h5ad`)
+- optional PNG figures (`--plots-dir`)
+
+Each major preprocessing step is implemented as a dedicated function inside the script (QC, filtering, normalization, dimensionality reduction, clustering, annotation) with inline docstrings. Basic error handling ensures that missing files or reference labels produce clear CLI messages.
 
 ---
 

@@ -1,184 +1,191 @@
-import scanpy as sc
+"""
+Modular Scanpy workflow for the bone marrow / PBMC dataset.
+
+Usage:
+    python bonemarrow_stage2.py --input-path bone_marrow.h5ad --output-h5ad processed.h5ad
+
+Key steps:
+1. Load AnnData with error handling.
+2. Run quality control, filtering, normalization, and log-transform.
+3. Select highly variable genes, scale, perform PCA/UMAP, and cluster.
+4. Detect marker genes and annotate clusters using reference `Cell.group`.
+5. Optionally visualize intermediate results or write processed data to disk.
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+from typing import Dict, Optional
+
 import anndata as ad
 import pandas as pd
+import scanpy as sc
 
-#1.LOAD DATA
-"""
-Load the single-cell RNA-seq dataset in AnnData format.
 
-This step reads a preprocessed `.h5ad` file containing:
-- adata.X: gene expression matrix (cells x genes)
-- adata.obs: cell metadata
-- adata.var: gene metadata
+def load_anndata(path: Path) -> ad.AnnData:
+    """Load an AnnData object, raising a readable error if unavailable."""
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Input file not found: {path}")
+    logging.info("Reading AnnData from %s", path)
+    try:
+        adata = sc.read_h5ad(path)
+    except OSError as exc:
+        raise OSError(f"Failed to read {path}: {exc}") from exc
+    logging.info("Loaded dataset with %d cells and %d genes", adata.n_obs, adata.n_vars)
+    return adata
 
-After loading, basic properties of the dataset are displayed to verify:
-- Number of cells and genes
-- First few genes and cell metadata
-- Conversion to DataFrame (optional) for quick inspection
-"""
-adata = sc.read_h5ad("bone_marrow.h5ad")
 
-adata.shape
-adata.X
-adata.var.head()
-adata.obs.head()
-adata.to_df()
+def add_qc_metrics(adata: ad.AnnData) -> None:
+    """Attach QC metrics (mitochondrial content, counts) to the object."""
+    adata.var_names_make_unique()
+    adata.obs_names_make_unique()
+    adata.var["mt"] = adata.var_names.str.upper().str.startswith("MT-")
+    sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], percent_top=None, inplace=True)
 
-#2.QUALITY CONTROL
-"""
-Perform initial quality control (QC) on the single-cell dataset.
 
-Steps included:
-1. Ensure unique gene and cell names to avoid conflicts during analysis.
-2. Identify mitochondrial genes by checking if gene names start with 'MT-'.
-3. Compute QC metrics for each cell, including:
-   - Total counts
-   - Number of genes detected
-   - Percentage of counts from mitochondrial genes
+def filter_cells(
+    adata: ad.AnnData,
+    min_genes: int = 300,
+    max_genes: int = 4000,
+    max_pct_mt: float = 10.0,
+) -> ad.AnnData:
+    """Filter out likely empty droplets, doublets, or stressed cells."""
+    mask = (
+        (adata.obs["n_genes_by_counts"] > min_genes)
+        & (adata.obs["n_genes_by_counts"] < max_genes)
+        & (adata.obs["pct_counts_mt"] < max_pct_mt)
+    )
+    removed = (~mask).sum()
+    logging.info("Filtering removed %d cells (%.2f%%)", removed, removed / adata.n_obs * 100)
+    return adata[mask].copy()
 
-High mitochondrial content can indicate stressed or dying cells, which may be removed in filtering steps.
-"""
-adata.var_names_make_unique()
-adata.obs_names_make_unique()
 
-adata.var["mt"] = adata.var_names.str.startswith("MT-")
-sc.pp.calculate_qc_metrics(adata, qc_vars=["mt"], percent_top=None, inplace=True)
-adata.obs.head()
+def normalize_and_log(adata: ad.AnnData) -> None:
+    """Normalize library size and log-transform counts."""
+    sc.pp.normalize_total(adata, target_sum=1e4)
+    sc.pp.log1p(adata)
+    adata.raw = adata  # preserve log-normalized values for marker calling
 
-#3.QUALITY CONTROL FILTERING
-"""
-Filter out low-quality or potentially problematic cells based on QC metrics.
 
-Filtering criteria:
-1. Remove cells with fewer than 300 genes detected – likely empty droplets or dead cells.
-2. Remove cells with more than 4000 genes detected – potential doublets or multiplets.
-3. Remove cells with >10% of counts from mitochondrial genes – indicates stressed or dying cells.
+def select_hvgs(adata: ad.AnnData) -> ad.AnnData:
+    """Restrict data frame to highly variable genes."""
+    sc.pp.highly_variable_genes(
+        adata, min_mean=0.0125, max_mean=3, min_disp=0.5, flavor="seurat_v3"
+    )
+    hvgs = adata[:, adata.var["highly_variable"]].copy()
+    logging.info("Retained %d highly variable genes", hvgs.n_vars)
+    return hvgs
 
-After filtering, the dataset contains higher-quality cells suitable for downstream analysis.
-"""
 
-adata = adata[adata.obs.n_genes_by_counts < 4000, :]
-adata = adata[adata.obs.n_genes_by_counts > 300, :]
-adata = adata[adata.obs.pct_counts_mt < 10, :]
-adata.obs.head()
+def scale_and_embed(adata: ad.AnnData, n_pcs: int = 40, n_neighbors: int = 10) -> None:
+    """Scale genes, compute PCA, neighbors, and UMAP."""
+    sc.pp.scale(adata, max_value=10)
+    sc.tl.pca(adata, svd_solver="arpack")
+    sc.pp.neighbors(adata, n_neighbors=n_neighbors, n_pcs=n_pcs)
+    sc.tl.umap(adata)
 
-#4.NORMALIZATION
-"""
-Normalize gene expression counts for each cell to account for differences
-in sequencing depth.
 
-- `target_sum=1e4` scales each cell's total counts to 10,000.
-- This ensures comparability across cells.
-"""
-sc.pp.normalize_total(adata, target_sum=1e4)
+def cluster_and_rank(adata: ad.AnnData, resolution: float = 0.5) -> None:
+    """Perform Leiden clustering and compute marker genes."""
+    sc.tl.leiden(adata, resolution=resolution)
+    sc.tl.rank_genes_groups(adata, groupby="leiden", method="wilcoxon")
 
-#5.LOGARITHMIC TRANSFORMATION
-"""
-Apply log1p transformation (log(x + 1)) to normalized counts.
 
-- Reduces the effect of extreme values and makes the data more normally distributed.
-- Facilitates downstream analyses like PCA and clustering.
-"""
-sc.pp.log1p(adata)
+def annotate_cell_types(
+    adata: ad.AnnData, reference_key: str = "Cell.group", cluster_key: str = "leiden"
+) -> Dict[str, str]:
+    """Map clusters to cell types via majority vote using reference annotations."""
+    if reference_key not in adata.obs.columns:
+        raise KeyError(f"{reference_key} not found in adata.obs")
+    mapping = (
+        adata.obs.groupby(cluster_key)[reference_key]
+        .agg(lambda x: x.value_counts().idxmax())
+        .to_dict()
+    )
+    adata.obs["cell_type"] = adata.obs[cluster_key].map(mapping).astype("category")
+    return mapping
 
-#6.IDENTIFY HIGHLY VARIABLE GENES   
-"""
-Select genes with high variability across cells for downstream analysis.
 
-- Parameters:
-  - min_mean=0.0125: minimum mean expression threshold
-  - max_mean=3: maximum mean expression threshold
-  - min_disp=0.5: minimum dispersion threshold
-- Only highly variable genes are retained in the dataset for PCA and clustering,
-  reducing noise from lowly expressed or uninformative genes.
-"""
-sc.pp
-sc.pp.highly_variable_genes(adata, min_mean=0.0125, max_mean=3, min_disp=0.5)
-adata = adata[:, adata.var.highly_variable]
-adata.var.head()
+def summarize_cell_types(adata: ad.AnnData, key: str = "cell_type") -> pd.DataFrame:
+    """Return counts and percentages for a given annotation key."""
+    counts = adata.obs[key].value_counts().sort_index()
+    df = pd.DataFrame({"n_cells": counts, "percent": counts / counts.sum() * 100})
+    logging.info("Cell-type summary:\n%s", df)
+    return df
 
-#7.SCALING THE DATa
-"""
-Scale each gene to unit variance and zero mean.
 
-- `max_value=10` caps extreme values to reduce the influence of outliers.
-- Standardization ensures that all genes contribute equally to downstream analyses
-  like PCA and clustering.
-"""
-sc.pp.scale(adata, max_value=10)
+def plot_results(
+    adata: ad.AnnData,
+    plots_dir: Optional[Path] = None,
+    show: bool = False,
+) -> None:
+    """Optionally render or save diagnostic plots."""
+    if plots_dir:
+        plots_dir.mkdir(parents=True, exist_ok=True)
 
-#8.PCA
-"""
-Perform PCA on the scaled, highly variable genes to reduce dimensionality.
+    def _save(fig, name: str) -> None:
+        if fig is not None and plots_dir:
+            fig.savefig(plots_dir / f"{name}.png", dpi=150, bbox_inches="tight")
 
-- `svd_solver="arpack"`: efficient solver for PCA
-- Captures major axes of variation in the data
-- The resulting principal components are used for neighborhood graph construction
-- Visualize variance explained by each PC to decide how many PCs to use for downstream analyses
-"""
-sc.tl.pca(adata, svd_solver="arpack")
-sc.pl.pca_variance_ratio(adata, log=True)
+    fig = sc.pl.pca_variance_ratio(adata, log=True, show=show, return_fig=True)
+    _save(fig, "pca_variance_ratio")
 
-#9.COMPUTE NEIGHBORHOOD GRAPH
-"""
-Construct a K-nearest neighbors graph based on PCA-reduced dimensions.
+    fig = sc.pl.umap(
+        adata, color=["n_genes_by_counts", "pct_counts_mt"], show=show, return_fig=True
+    )
+    _save(fig, "umap_qc")
 
-- `n_neighbors=10`: number of nearest neighbors to consider for each cell
-- `n_pcs=40`: number of principal components used
-- This graph is the foundation for clustering and UMAP visualization
-"""
-sc.pp.neighbors(adata, n_neighbors=10, n_pcs=40)
+    fig = sc.pl.umap(adata, color=["leiden"], show=show, return_fig=True)
+    _save(fig, "umap_leiden")
 
-#10.UMAP EMBEDDING FOR VISUALIZATION
-"""
-Compute a 2D UMAP embedding of the cells for visualization.
+    if "cell_type" in adata.obs:
+        fig = sc.pl.umap(adata, color=["cell_type"], legend_loc="on data", show=show, return_fig=True)
+        _save(fig, "umap_cell_types")
 
-- Preserves both local and global structure of the data
-- Colors can highlight QC metrics or cluster assignments
-"""
-sc.tl.umap(adata)
-sc.pl.umap(adata, color=["n_genes_by_counts", "pct_counts_mt"])
+    fig = sc.pl.rank_genes_groups(adata, n_genes=20, sharey=False, show=show, return_fig=True)
+    _save(fig, "marker_genes")
 
-#11.LEIDEN CLUSTERING
-"""
-Cluster cells using the Leiden algorithm on the neighborhood graph.
 
-- `resolution=0.5`: controls cluster granularity (higher → more clusters)
-- Clustering identifies transcriptionally distinct groups of cells
-- Visualize clusters on the UMAP embedding
-"""
-sc.tl.leiden(adata, resolution=0.5)
-sc.pl.umap(adata, color=["leiden"])
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the Scanpy pipeline on a bone marrow/PBMC dataset.")
+    parser.add_argument("--input-path", type=Path, default=Path("bone_marrow.h5ad"), help="Path to the input .h5ad file.")
+    parser.add_argument("--output-h5ad", type=Path, help="Optional path to write the processed AnnData object.")
+    parser.add_argument("--plots-dir", type=Path, help="Directory to save figures (PNG).")
+    parser.add_argument("--show-plots", action="store_true", help="Display plots interactively.")
+    parser.add_argument("--reference-label", default="Cell.group", help="obs column used for majority-vote annotation.")
+    parser.add_argument("--min-genes", type=int, default=300, help="Minimum genes per cell for filtering.")
+    parser.add_argument("--max-genes", type=int, default=4000, help="Maximum genes per cell for filtering.")
+    parser.add_argument("--max-pct-mt", type=float, default=10.0, help="Maximum mitochondrial percentage per cell.")
+    parser.add_argument("--resolution", type=float, default=0.5, help="Leiden resolution parameter.")
+    return parser.parse_args()
 
-#12.FIND MARKER GENES FOR EACH CLUSTER
-"""
-Identify genes that are differentially expressed between clusters.
 
-- `groupby="leiden"`: tests each Leiden cluster against all others
-- `method="wilcoxon"`: non-parametric statistical test for marker detection
-- Plot top marker genes to help interpret cluster identities
-"""
-sc.tl.rank_genes_groups(adata, "leiden", method="wilcoxon")
-sc.pl.rank_genes_groups(adata, n_genes=20, sharey=False)
+def main() -> None:
+    args = parse_args()
+    logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+    try:
+        adata = load_anndata(args.input_path)
+        add_qc_metrics(adata)
+        adata = filter_cells(adata, args.min_genes, args.max_genes, args.max_pct_mt)
+        normalize_and_log(adata)
+        hvgs = select_hvgs(adata)
+        scale_and_embed(hvgs)
+        cluster_and_rank(hvgs, resolution=args.resolution)
+        mapping = annotate_cell_types(hvgs, reference_key=args.reference_label)
+        logging.info("Cluster-to-cell-type mapping: %s", mapping)
+        summary = summarize_cell_types(hvgs)
+        print(summary)  # explicit stdout for notebooks/CLI capture
+        plot_results(hvgs, plots_dir=args.plots_dir, show=args.show_plots)
+        if args.output_h5ad:
+            hvgs.write(args.output_h5ad)
+            logging.info("Wrote processed AnnData to %s", args.output_h5ad)
+    except Exception as exc:  # pylint: disable=broad-except
+        logging.error("Pipeline failed: %s", exc)
+        sys.exit(1)
 
-#13.ANNOTATE CELL TYPES BASED ON MARKER GENES
-"""
-Map clusters to known cell types using the most frequent label in 'Cell.group'.
 
-Steps:
-1. For each Leiden cluster, determine the most frequent Cell.group label
-2. Map cluster IDs to these cell type labels
-3. Store results in adata.obs['cell_type']
-4. Visualize annotated cell types on the UMAP
-5. Optional: cross-tabulate to compare cluster assignments with original labels
-"""
-clus
-# For each Leiden cluster, pick the most frequent Cell.group
-cluster2celltype = adata.obs.groupby('leiden')['Cell.group'] \
-                            .agg(lambda x: x.value_counts().idxmax()) \
-                            .to_dict()
-print(cluster2celltype)
-adata.obs['cell_type'] = adata.obs['leiden'].map(cluster2celltype).astype('category')
-sc.pl.umap(adata, color='cell_type', legend_loc='on data')
-
-pd.crosstab(adata.obs['cell_type'], adata.obs['Cell.group'])
+if __name__ == "__main__":
+    main()
