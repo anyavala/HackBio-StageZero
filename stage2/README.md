@@ -121,6 +121,54 @@ cluster2celltype = adata.obs.groupby('leiden')["Cell.group"] \
 
 ## 🛠 Requirements
 
+### 🔧 Installation Instructions
+
+To ensure full reproducibility, follow these steps to set up the environment.
+
+#### 1. Create and activate a virtual environment
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+```
+
+#### 2. Install dependencies
+
+Install required packages:
+
+```bash
+pip install scanpy anndata pandas matplotlib seaborn
+```
+
+(Optional packages like `louvain` or `leidenalg` may be installed if needed.)
+
+---
+
+## ▶️ Running the Analysis
+
+### Run the Notebook (`bone_narrow.ipynb`)
+
+1. Launch Jupyter Notebook:
+
+```bash
+jupyter notebook
+```
+
+2. Open `bone_narrow.ipynb`.
+3. Run all cells in order to reproduce the full analysis.
+
+### Run the Python Script (`bonemarrow_stage2.py`)
+
+Execute:
+
+```bash
+python bonemarrow_stage2.py
+```
+
+Ensure that `bone_marrow.h5ad` is located in the same directory as the script unless you modify the path.
+
+---
+
 * Python 3.10+
 * Scanpy
 * AnnData
