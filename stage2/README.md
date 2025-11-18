@@ -2,7 +2,7 @@
 
 This repository contains scripts and notebooks for processing, analyzing, and visualizing single-cell RNA sequencing (scRNA-seq) data from bone marrow samples using **Scanpy** and **AnnData**.
 
-## 📌 Overview
+##  Overview
 
 The analysis follows a standard scRNA-seq preprocessing and clustering workflow, including:
 
@@ -23,7 +23,7 @@ All steps are implemented in **`bone_narrow.ipynb`** and **`bonemarrow_stage2.py
 
 ---
 
-## 📂 Files Included
+##  Files Included
 
 | File                     | Description                                                                 |
 | ------------------------ | --------------------------------------------------------------------------- |
@@ -33,7 +33,7 @@ All steps are implemented in **`bone_narrow.ipynb`** and **`bonemarrow_stage2.py
 
 ---
 
-## 🧬 scRNA-seq Analysis Steps
+##  scRNA-seq Analysis Steps
 
 Below is a summary of the workflow implemented in the code.
 
@@ -110,7 +110,7 @@ cluster2celltype = adata.obs.groupby('leiden')["Cell.group"] \
 
 ---
 
-## 📊 Outputs
+## Outputs
 
 * PCA variance plots
 * UMAP plots colored by QC metrics, clusters, and cell types
@@ -144,7 +144,7 @@ pip install scanpy anndata pandas matplotlib seaborn
 
 ---
 
-## ▶️ Running the Analysis
+##  Running the Analysis
 
 ### Run the Notebook (`bone_narrow.ipynb`)
 
@@ -191,12 +191,12 @@ pip install scanpy anndata pandas
 
 ---
 
-## 📜 License
+##  License
 
 This project is for educational and research purposes.
 
 ---
 
-## 👩‍💻 Author
+##  Author
 
 Created by **anyavala** as part of the HackBio Stage Zero project.
